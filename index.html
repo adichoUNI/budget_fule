@@ -90,6 +90,14 @@ details summary{cursor:pointer;color:var(--muted);margin-top:4px}
 @keyframes fall{to{transform:translateY(105vh) rotate(540deg);opacity:.2}}
 @media (prefers-reduced-motion:reduce){ *{animation:none!important;transition:none!important} }
 
+/* sync */
+.sync-badge{font-size:.8rem;color:var(--muted);margin-inline-start:auto;margin-inline-end:8px}
+.sync-badge.on{color:var(--green)}
+.sync-badge.err{color:var(--red)}
+#syncBox p{margin:0 0 8px}
+.join{display:flex;gap:8px;margin-top:8px}
+.code{font-family:ui-monospace,monospace;direction:ltr;unicode-bidi:isolate}
+
 dialog{border:1px solid var(--line);border-radius:18px;background:var(--card);color:var(--ink);width:min(420px,92vw);padding:20px}
 dialog::backdrop{background:#0006}
 dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
@@ -100,6 +108,7 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
 <main>
   <header>
     <h1>⛽ מד הדלק השבועי</h1>
+    <span class="sync-badge" id="syncBadge"></span>
     <button class="icon" id="openSettings" aria-label="הגדרות">⚙️</button>
   </header>
 
@@ -174,7 +183,10 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
       <button value="cancel" formnovalidate>ביטול</button>
     </div>
     <hr style="border:0;border-top:1px solid var(--line);margin:18px 0 6px">
-    <div class="muted">הנתונים נשמרים בדפדפן הזה בלבד. כדי להעביר למכשיר אחר — ייצוא ואז ייבוא.</div>
+    <h2>סנכרון משותף</h2>
+    <div id="syncBox"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:18px 0 6px">
+    <div class="muted">גיבוי לקובץ: ייצוא שומר את כל ההוצאות, ייבוא מוסיף את ההוצאות שבקובץ.</div>
     <div class="actions">
       <button type="button" id="exportBtn">ייצוא קובץ</button>
       <button type="button" id="importBtn">ייבוא קובץ</button>
@@ -183,14 +195,34 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
   </form>
 </dialog>
 
-<script>
+<script type="module">
+// Firebase web-app config (Firebase console → Project settings → Your apps → Config).
+// null = no sync: the app works as before, data stays in this browser only.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAMER1Kp-EvYXCaqURZgVA1-HB2jBNdp6w",
+  authDomain: "taktziv-5cdbb.firebaseapp.com",
+  projectId: "taktziv-5cdbb",
+  storageBucket: "taktziv-5cdbb.firebasestorage.app",
+  messagingSenderId: "636346062705",
+  appId: "1:636346062705:web:68b985d362a918082d48d0"
+};
+const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+
 const KEY = 'budget-fuel-v1';
+const HKEY = 'budget-fuel-household';      // shared household code joined on this device
+const MKEY = 'budget-fuel-migrated-';      // + code: this device's pre-sync expenses were already uploaded
 const $ = id => document.getElementById(id);
 const DEFAULTS = { weeklyLimit: 1000, monthlyLimit: null, expenses: [] };
 
+// ids were numbers (Date.now()) before sync; Firestore doc ids are strings
+const normalize = e => ({ id: String(e.id), ts: Number(e.ts) || Number(e.id) || 0, date: String(e.date), amount: Number(e.amount) || 0, note: e.note || '' });
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
 function load(){
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.expenses)) return { ...DEFAULTS, ...s }; }
-  catch(e){}
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && Array.isArray(s.expenses)) return { ...DEFAULTS, ...s, expenses: s.expenses.map(normalize) };
+  } catch(e){}
   return { ...DEFAULTS, expenses: [] };
 }
 let state = load();
@@ -228,7 +260,7 @@ function computeWeeks(){
   const weeks = [];
   let deficit = 0;
   for (let w = first; w <= last; w = addDays(w, 7)){
-    const items = (byWeek[w] || []).sort((a,b) => b.date.localeCompare(a.date) || b.id - a.id);
+    const items = (byWeek[w] || []).sort((a,b) => b.date.localeCompare(a.date) || b.ts - a.ts);
     const spent = sum(items);
     const limit = state.weeklyLimit - deficit;
     const over = Math.max(0, spent - limit);
@@ -312,7 +344,7 @@ function render(){
     <li><span class="muted">${short(e.date)}</span>
         <span class="grow">${esc(e.note) || '<span class="muted">—</span>'}</span>
         <span class="amt">${money(e.amount)}</span>
-        <button class="del" data-id="${e.id}" aria-label="מחיקה">✕</button></li>`).join('')
+        <button class="del" data-id="${esc(e.id)}" aria-label="מחיקה">✕</button></li>`).join('')
     : '<li class="muted">עוד לא הוכנסו הוצאות השבוע.</li>';
 
   // current month
@@ -377,7 +409,7 @@ function verdictHTML(m){
     </div>`;
 }
 
-function esc(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function confetti(){
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -393,6 +425,130 @@ function confetti(){
   }
 }
 
+/* ---------- shared sync (Firebase) ---------- */
+// Everyone holding the same household code reads and writes households/<code>.
+// The code is the secret, so it is long and random; the Firestore rules forbid listing households.
+let cloud = null;
+const household = () => { try { return localStorage.getItem(HKEY) || ''; } catch(e){ return ''; } };
+const validCode = c => /^[a-z0-9]{16,40}$/.test(c || '');
+function makeCode(){
+  const abc = 'abcdefghijkmnpqrstuvwxyz23456789', r = crypto.getRandomValues(new Uint8Array(20));
+  return Array.from(r, b => abc[b % abc.length]).join('');
+}
+const inviteLink = code => `${location.origin}${location.pathname}?h=${code}`;
+
+function setBadge(text, cls){ const b = $('syncBadge'); b.textContent = text; b.className = 'sync-badge ' + (cls || ''); }
+function syncError(e){ console.error('sync', e); setBadge('⚠️ אין סנכרון', 'err'); }
+
+async function connect(code){
+  setBadge('מתחבר…');
+  try {
+    const [app, auth, fs] = await Promise.all(['firebase-app.js','firebase-auth.js','firebase-firestore.js'].map(f => import(FB + f)));
+    const fapp = app.initializeApp(FIREBASE_CONFIG);
+    await auth.signInAnonymously(auth.getAuth(fapp));
+    let db;
+    try { db = fs.initializeFirestore(fapp, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) }); }
+    catch(e){ db = fs.getFirestore(fapp); }
+    const hRef = fs.doc(db, 'households', code);
+    const col = fs.collection(hRef, 'expenses');
+    const toDoc = e => ({ date: e.date, amount: e.amount, note: e.note || '', ts: e.ts || Date.now() });
+    const api = {
+      add: e => fs.setDoc(fs.doc(col, e.id), toDoc(e)),
+      del: id => fs.deleteDoc(fs.doc(col, id)),
+      settings: () => fs.setDoc(hRef, { weeklyLimit: state.weeklyLimit, monthlyLimit: state.monthlyLimit || null }, { merge: true }),
+      addMany: async list => {
+        for (let i = 0; i < list.length; i += 400){
+          const b = fs.writeBatch(db);
+          list.slice(i, i + 400).forEach(e => b.set(fs.doc(col, e.id), toDoc(e)));
+          await b.commit();
+        }
+      }
+    };
+    // First connection from this device: upload what was recorded here before syncing.
+    // Only once, so an expense the other person later deletes is not re-uploaded from this device's copy.
+    if (!localStorage.getItem(MKEY + code)){
+      const [h, ex] = await Promise.all([fs.getDoc(hRef), fs.getDocs(col)]);
+      if (!h.exists()) await api.settings();
+      const have = new Set(ex.docs.map(d => d.id));
+      await api.addMany(state.expenses.filter(e => !have.has(e.id)));
+      try { localStorage.setItem(MKEY + code, '1'); } catch(e){}
+    }
+    cloud = api;
+    fs.onSnapshot(hRef, s => {
+      const d = s.data(); if (!d) return;
+      state.weeklyLimit = Number(d.weeklyLimit) || state.weeklyLimit;
+      state.monthlyLimit = Number(d.monthlyLimit) || null;
+      save(); render();
+    }, syncError);
+    fs.onSnapshot(col, s => {
+      state.expenses = s.docs.map(d => normalize({ id: d.id, ...d.data() }));
+      save(); render();
+      setBadge(s.metadata.fromCache ? '🔄 ממתין לרשת' : '🔄 מסונכרן', s.metadata.fromCache ? '' : 'on');
+    }, syncError);
+  } catch(e){
+    cloud = null;
+    syncError(e);
+  }
+  renderSync();
+}
+
+function renderSync(){
+  const box = $('syncBox'), code = household();
+  if (!FIREBASE_CONFIG){
+    box.innerHTML = '<p class="muted">הסנכרון עוד לא הוגדר באפליקציה. בינתיים הנתונים נשמרים רק בדפדפן הזה.</p>';
+    return;
+  }
+  if (!code){
+    box.innerHTML = `
+      <p class="muted">כדי ששתיכן תראו את אותן הוצאות: אחת יוצרת חשבון משותף ושולחת לשנייה את קישור ההזמנה. ההוצאות שכבר נרשמו בכל מכשיר יתווספו לחשבון.</p>
+      <button type="button" class="primary" data-act="create">יצירת חשבון משותף</button>
+      <div class="join"><input id="joinCode" class="code" placeholder="או הדביקו קוד הצטרפות"><button type="button" data-act="join">הצטרפות</button></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <p>${cloud ? 'מחובר לחשבון המשותף.' : 'החשבון המשותף מוגדר, אבל החיבור נכשל. בדקו את הרשת ורעננו את הדף.'}</p>
+    <p class="muted">קוד: <span class="code">${esc(code)}</span></p>
+    <div class="actions">
+      <button type="button" class="primary" data-act="invite">שליחת קישור הזמנה</button>
+      <button type="button" data-act="leave">ניתוק המכשיר הזה</button>
+    </div>`;
+}
+
+function joinHousehold(code){
+  try { localStorage.setItem(HKEY, code); } catch(e){}
+  connect(code);
+}
+
+$('syncBox').addEventListener('click', async ev => {
+  const act = ev.target.closest('button[data-act]')?.dataset.act;
+  if (act === 'create') joinHousehold(makeCode());
+  else if (act === 'join'){
+    const c = $('joinCode').value.trim().toLowerCase();
+    if (!validCode(c)) { alert('הקוד לא תקין'); return; }
+    joinHousehold(c);
+  } else if (act === 'invite'){
+    const url = inviteLink(household());
+    try {
+      if (navigator.share) await navigator.share({ title: 'מד הדלק השבועי', text: 'הצטרפי לתקציב המשותף שלנו:', url });
+      else { await navigator.clipboard.writeText(url); alert('הקישור הועתק. שלחו אותו בוואטסאפ.'); }
+    } catch(e){ if (e.name !== 'AbortError') prompt('העתיקו את הקישור:', url); }
+  } else if (act === 'leave'){
+    if (!confirm('לנתק את המכשיר הזה מהחשבון המשותף? הנתונים בחשבון לא יימחקו.')) return;
+    try { localStorage.removeItem(HKEY); } catch(e){}
+    location.reload();
+  }
+});
+
+/* ---------- data changes (local first, then the shared store) ---------- */
+function addExpense(e){
+  state.expenses.push(e); save(); render();
+  if (cloud) cloud.add(e).catch(syncError);
+}
+function deleteExpense(id){
+  state.expenses = state.expenses.filter(e => e.id !== id); save(); render();
+  if (cloud) cloud.del(id).catch(syncError);
+}
+
 /* ---------- events ---------- */
 $('date').value = today();
 $('date').max = today();
@@ -401,9 +557,7 @@ $('addForm').addEventListener('submit', ev => {
   ev.preventDefault();
   const amount = parseFloat($('amount').value);
   if (!(amount > 0)) return;
-  state.expenses.push({ id: Date.now(), date: $('date').value, amount, note: $('note').value.trim() });
-  save();
-  render();
+  addExpense({ id: newId(), ts: Date.now(), date: $('date').value, amount, note: $('note').value.trim() });
   const wk = computeWeeks().find(w => w.current);
   if (wk.spent <= wk.limit) confetti();
   $('amount').value = ''; $('note').value = ''; $('date').value = today();
@@ -413,13 +567,13 @@ $('addForm').addEventListener('submit', ev => {
 $('weekItems').addEventListener('click', ev => {
   const b = ev.target.closest('.del'); if (!b) return;
   if (!confirm('למחוק את ההוצאה?')) return;
-  state.expenses = state.expenses.filter(e => e.id !== Number(b.dataset.id));
-  save(); render();
+  deleteExpense(b.dataset.id);
 });
 
 $('openSettings').onclick = () => {
   $('sWeekly').value = state.weeklyLimit;
   $('sMonthly').value = state.monthlyLimit || '';
+  renderSync();
   $('settings').showModal();
 };
 $('settings').addEventListener('close', () => {
@@ -427,6 +581,7 @@ $('settings').addEventListener('close', () => {
   state.weeklyLimit = Math.max(1, Number($('sWeekly').value) || DEFAULTS.weeklyLimit);
   state.monthlyLimit = Number($('sMonthly').value) || null;
   save(); render();
+  if (cloud) cloud.settings().catch(syncError);
 });
 
 $('exportBtn').onclick = () => {
@@ -443,13 +598,29 @@ $('importFile').onchange = async ev => {
   try {
     const s = JSON.parse(await f.text());
     if (!Array.isArray(s.expenses)) throw 0;
-    if (!confirm(`לייבא ${s.expenses.length} הוצאות? הנתונים הנוכחיים יוחלפו.`)) return;
-    state = { ...DEFAULTS, ...s }; save(); render(); $('settings').close();
+    const have = new Set(state.expenses.map(e => e.id));
+    const incoming = s.expenses.map(normalize).filter(e => !have.has(e.id));
+    if (!confirm(`להוסיף ${incoming.length} הוצאות מהקובץ?`)) return;
+    state.expenses.push(...incoming); save(); render();
+    if (cloud) cloud.addMany(incoming).catch(syncError);
+    $('settings').close();
   } catch(e){ alert('הקובץ לא תקין'); }
   ev.target.value = '';
 };
 
+/* ---------- start ---------- */
 render();
+if (FIREBASE_CONFIG){
+  const invited = new URLSearchParams(location.search).get('h');
+  if (validCode(invited)){
+    history.replaceState(null, '', location.pathname);
+    if (invited !== household()){
+      if (!household() || confirm('לעבור לחשבון המשותף מהקישור?')) { try { localStorage.setItem(HKEY, invited); } catch(e){} }
+    }
+  }
+  if (household()) connect(household());
+  else setBadge('לא משותף');
+}
 </script>
 </body>
 </html>

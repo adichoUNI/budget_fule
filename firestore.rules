@@ -1,0 +1,18 @@
+rules_version = '2';
+// Paste into Firebase console → Firestore Database → Rules.
+// Whoever knows a household code (20 random characters) can read and write that household;
+// households cannot be listed, so the code works like a shared password.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /households/{h} {
+      allow get, create, update: if request.auth != null && h.size() >= 16;
+      match /expenses/{e} {
+        allow read, delete: if request.auth != null;
+        allow create, update: if request.auth != null
+          && request.resource.data.keys().hasOnly(['date', 'amount', 'note', 'ts'])
+          && request.resource.data.amount is number
+          && request.resource.data.date is string;
+      }
+    }
+  }
+}
