@@ -67,6 +67,16 @@ ul.list .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-sp
 .amt{font-variant-numeric:tabular-nums;font-weight:500}
 .del{background:none;border:0;color:var(--muted);padding:2px 6px}
 .del:hover{color:var(--red)}
+.del.edit:hover{color:var(--accent)}
+.weeknav{display:flex;gap:6px}
+.weeknav button{padding:4px 10px;font-size:.85rem}
+.weeknav button:disabled{opacity:.4;cursor:default}
+ul.list li.editing{display:block}
+form.edit{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+form.edit .full{grid-column:1/-1}
+form.edit .actions{margin-top:0}
+#weekList li[data-week]{cursor:pointer}
+#weekList li[data-week]:hover .grow{color:var(--accent)}
 .pill{font-size:.8rem;padding:2px 8px;border-radius:99px;white-space:nowrap}
 .pill.ok{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
 .pill.bad{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
@@ -148,8 +158,15 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
   </section>
 
   <!-- this week's items -->
-  <section class="card">
-    <h2>ההוצאות של השבוע</h2>
+  <section class="card" id="itemsCard">
+    <div class="row">
+      <h2 id="itemsTitle">ההוצאות של השבוע</h2>
+      <span class="weeknav">
+        <button type="button" id="prevWeek">→ שבוע קודם</button>
+        <button type="button" id="nextWeek">שבוע הבא ←</button>
+      </span>
+    </div>
+    <div class="muted" id="itemsSum"></div>
     <ul class="list" id="weekItems"></ul>
   </section>
 
@@ -226,6 +243,8 @@ function load(){
   return { ...DEFAULTS, expenses: [] };
 }
 let state = load();
+let viewWeek = null;   // week shown in the expenses card (start date); null = this week
+let editing = null;    // id of the expense being edited
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e){} }
 
 /* ---------- dates (local, as YYYY-MM-DD strings) ---------- */
@@ -339,13 +358,24 @@ function render(){
   else if (frac < .45) setMood($('weekMood'), 'happy','🙂', 'עדיין בתוך התקציב', 'כדאי להאט קצת.');
   else                 setMood($('weekMood'), 'happy', wk.spent === 0 ? '🌞' : '🥳', 'עומדות בתקציב!', 'ממשיכות ככה.');
 
-  // this week's items
-  $('weekItems').innerHTML = wk.items.length ? wk.items.map(e => `
-    <li><span class="muted">${short(e.date)}</span>
-        <span class="grow">${esc(e.note) || '<span class="muted">—</span>'}</span>
-        <span class="amt">${money(e.amount)}</span>
-        <button class="del" data-id="${esc(e.id)}" aria-label="מחיקה">✕</button></li>`).join('')
-    : '<li class="muted">עוד לא הוכנסו הוצאות השבוע.</li>';
+  // items of the week being viewed (the current one unless she navigated back)
+  let vi = weeks.findIndex(w => w.start === viewWeek);
+  if (vi < 0){ vi = weeks.indexOf(wk); viewWeek = wk.start; }
+  const vw = weeks[vi];
+  $('prevWeek').disabled = vi === 0;
+  $('nextWeek').disabled = vw.current;
+  $('itemsTitle').textContent = vw.current ? 'ההוצאות של השבוע' : `ההוצאות של ${short(vw.start)}–${short(vw.end)}`;
+  $('itemsSum').textContent = vw.current ? '' : `הוצאנו ${money(vw.spent)} מתוך ${money(vw.limit)}`;
+  // a partner's change arriving mid-edit must not wipe what is being typed
+  if (!(editing && $('editForm'))){
+    $('weekItems').innerHTML = vw.items.length ? vw.items.map(e => e.id === editing ? editHTML(e) : `
+      <li><span class="muted">${short(e.date)}</span>
+          <span class="grow">${esc(e.note) || '<span class="muted">—</span>'}</span>
+          <span class="amt">${money(e.amount)}</span>
+          <button class="del edit" data-act="edit" data-id="${esc(e.id)}" aria-label="עריכה">✎</button>
+          <button class="del" data-act="del" data-id="${esc(e.id)}" aria-label="מחיקה">✕</button></li>`).join('')
+      : `<li class="muted">${vw.current ? 'עוד לא הוכנסו הוצאות השבוע.' : 'לא נרשמו הוצאות בשבוע הזה.'}</li>`;
+  }
 
   // current month
   const months = computeMonths();
@@ -385,10 +415,23 @@ function render(){
           : `<span class="pill bad">חריגה ${money(-m.diff)}</span>`}</li>`).join('');
 
   $('weekList').innerHTML = weeks.slice().reverse().map(w => `
-    <li><span class="grow">${short(w.start)}–${short(w.end)}${w.carried ? ` <span class="muted">(תקציב ${money(w.limit)})</span>` : ''}</span>
+    <li data-week="${w.start}" title="הצגת ההוצאות של השבוע הזה"><span class="grow">${short(w.start)}–${short(w.end)}${w.carried ? ` <span class="muted">(תקציב ${money(w.limit)})</span>` : ''}</span>
         <span class="amt">${money(w.spent)}</span>
         ${w.current ? '<span class="pill now">השבוע</span>'
           : w.over ? `<span class="pill bad">חריגה ${money(w.over)}</span>` : '<span class="pill ok">✓</span>'}</li>`).join('');
+}
+
+function editHTML(e){
+  return `
+    <li class="editing"><form class="edit" id="editForm" data-id="${esc(e.id)}" autocomplete="off">
+      <input class="full" id="eAmount" type="number" inputmode="decimal" step="0.01" min="0.01" value="${e.amount}" aria-label="סכום" required>
+      <input id="eNote" type="text" value="${esc(e.note)}" placeholder="על מה?" aria-label="על מה">
+      <input id="eDate" type="date" max="${today()}" value="${e.date}" aria-label="תאריך" required>
+      <div class="actions full">
+        <button class="primary" type="submit">שמירה</button>
+        <button type="button" data-act="cancel">ביטול</button>
+      </div>
+    </form></li>`;
 }
 
 function verdictHTML(m){
@@ -544,6 +587,11 @@ function addExpense(e){
   state.expenses.push(e); save(); render();
   if (cloud) cloud.add(e).catch(syncError);
 }
+function updateExpense(e){
+  const i = state.expenses.findIndex(x => x.id === e.id); if (i < 0) return;
+  state.expenses[i] = e; save(); render();
+  if (cloud) cloud.add(e).catch(syncError);
+}
 function deleteExpense(id){
   state.expenses = state.expenses.filter(e => e.id !== id); save(); render();
   if (cloud) cloud.del(id).catch(syncError);
@@ -565,9 +613,36 @@ $('addForm').addEventListener('submit', ev => {
 });
 
 $('weekItems').addEventListener('click', ev => {
-  const b = ev.target.closest('.del'); if (!b) return;
-  if (!confirm('למחוק את ההוצאה?')) return;
-  deleteExpense(b.dataset.id);
+  const b = ev.target.closest('button[data-act]'); if (!b) return;
+  const act = b.dataset.act;
+  if (act === 'del'){
+    if (!confirm('למחוק את ההוצאה?')) return;
+    deleteExpense(b.dataset.id);
+  } else if (act === 'edit'){
+    editing = b.dataset.id; $('weekItems').innerHTML = ''; render();
+    $('eAmount')?.focus();
+  } else if (act === 'cancel'){
+    editing = null; $('weekItems').innerHTML = ''; render();
+  }
+});
+$('weekItems').addEventListener('submit', ev => {
+  ev.preventDefault();
+  const id = ev.target.dataset.id, old = state.expenses.find(e => e.id === id);
+  const amount = parseFloat($('eAmount').value), date = $('eDate').value, note = $('eNote').value.trim();
+  editing = null; $('weekItems').innerHTML = '';
+  if (old && amount > 0 && date){
+    updateExpense({ ...old, amount, date, note });
+    viewWeek = weekStart(date);   // follow the expense if its date moved it to another week
+  }
+  render();
+});
+
+$('prevWeek').onclick = () => { viewWeek = addDays(viewWeek, -7); editing = null; $('weekItems').innerHTML = ''; render(); };
+$('nextWeek').onclick = () => { viewWeek = addDays(viewWeek, 7); editing = null; $('weekItems').innerHTML = ''; render(); };
+$('weekList').addEventListener('click', ev => {
+  const li = ev.target.closest('li[data-week]'); if (!li) return;
+  viewWeek = li.dataset.week; editing = null; $('weekItems').innerHTML = ''; render();
+  $('itemsCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 $('openSettings').onclick = () => {
