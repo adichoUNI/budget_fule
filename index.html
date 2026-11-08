@@ -75,6 +75,18 @@ ul.list li.editing{display:block}
 form.edit{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 form.edit .full{grid-column:1/-1}
 form.edit .actions{margin-top:0}
+select{font:inherit;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:10px 12px;width:100%}
+.cats{display:flex;flex-wrap:wrap;gap:6px}
+.cats label{position:relative}
+.cats input{position:absolute;opacity:0;pointer-events:none;width:auto}
+.cats span{display:block;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--soft);font-size:.9rem;cursor:pointer}
+.cats input:checked+span{background:var(--accent);border-color:var(--accent);color:#fff}
+.cats input:focus-visible+span{outline:2px solid var(--accent);outline-offset:1px}
+.tag{font-size:.75rem;padding:1px 8px;border-radius:99px;background:var(--soft);color:var(--muted);white-space:nowrap}
+.cat-h{font-size:.95rem;margin:16px 0 4px}
+.cat-name{width:7.5em;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cat-bar{flex:1;height:8px;background:var(--soft);border-radius:99px;overflow:hidden}
+.cat-bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
 #weekList li[data-week]{cursor:pointer}
 #weekList li[data-week]:hover .grow{color:var(--accent)}
 .pill{font-size:.8rem;padding:2px 8px;border-radius:99px;white-space:nowrap}
@@ -153,6 +165,7 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
       <input class="amount full" id="amount" type="number" inputmode="decimal" step="0.01" min="0.01" placeholder="סכום ב־₪" required>
       <input id="note" type="text" placeholder="על מה? (לא חובה)">
       <input id="date" type="date" required>
+      <div class="cats full" id="cats" role="radiogroup" aria-label="קטגוריה"></div>
       <button class="primary full" type="submit">הוספה</button>
     </form>
   </section>
@@ -176,6 +189,7 @@ dialog label{display:block;margin:10px 0 4px;font-size:.92rem}
     <div class="bar"><span id="monthBar"></span><i id="monthPace"></i></div>
     <div class="row muted"><span id="monthSpent"></span><span id="monthLimit"></span></div>
     <div class="mood" id="monthMood"><div class="face"></div><div><b></b><span class="muted"></span></div></div>
+    <div id="monthCats"></div>
   </section>
 
   <section class="card" id="lastMonthCard" hidden></section>
@@ -231,8 +245,11 @@ const MKEY = 'budget-fuel-migrated-';      // + code: this device's pre-sync exp
 const $ = id => document.getElementById(id);
 const DEFAULTS = { weeklyLimit: 1000, monthlyLimit: null, expenses: [] };
 
+const CATS = ['אוכל', 'אוכל בחוץ', 'קניות לבית', 'רכב', 'תחבורה ציבורית', 'בגדים', 'אחר'];
+const NO_CAT = 'ללא קטגוריה';
+
 // ids were numbers (Date.now()) before sync; Firestore doc ids are strings
-const normalize = e => ({ id: String(e.id), ts: Number(e.ts) || Number(e.id) || 0, date: String(e.date), amount: Number(e.amount) || 0, note: e.note || '' });
+const normalize = e => ({ id: String(e.id), ts: Number(e.ts) || Number(e.id) || 0, date: String(e.date), amount: Number(e.amount) || 0, note: e.note || '', cat: e.cat || '' });
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 function load(){
@@ -370,7 +387,8 @@ function render(){
   if (!(editing && $('editForm'))){
     $('weekItems').innerHTML = vw.items.length ? vw.items.map(e => e.id === editing ? editHTML(e) : `
       <li><span class="muted">${short(e.date)}</span>
-          <span class="grow">${esc(e.note) || '<span class="muted">—</span>'}</span>
+          <span class="grow">${esc(e.note) || (e.cat ? '' : '<span class="muted">—</span>')}</span>
+          ${e.cat ? `<span class="tag">${esc(e.cat)}</span>` : ''}
           <span class="amt">${money(e.amount)}</span>
           <button class="del edit" data-act="edit" data-id="${esc(e.id)}" aria-label="עריכה">✎</button>
           <button class="del" data-act="del" data-id="${esc(e.id)}" aria-label="מחיקה">✕</button></li>`).join('')
@@ -394,6 +412,14 @@ function render(){
   if (cm.spent > cm.limit)  setMood($('monthMood'), 'sad',  '🌧️', `החודש כבר חרגנו ב־${money(cm.spent - cm.limit)}`, 'עוד אפשר לצמצם את הנזק עד סוף החודש.');
   else if (cm.spent > pace) setMood($('monthMood'), 'warn', '🐢', 'קצת מעל הקצב', `לפי הקצב הרגיל היינו אמורות להיות על ${money(pace)}.`);
   else                      setMood($('monthMood'), 'happy','🌱', `בדרך לחסוך ${money(cm.limit - cm.spent)}`, `מתחת לקצב — לפי הקצב הרגיל היינו על ${money(pace)}.`);
+
+  // where this month's money went, by category
+  const byCat = {};
+  for (const e of state.expenses) if (e.date.slice(0,7) === cm.key) byCat[e.cat || NO_CAT] = (byCat[e.cat || NO_CAT] || 0) + e.amount;
+  const catRows = Object.entries(byCat).sort((a,b) => b[1] - a[1]);
+  const catMax = catRows.length ? catRows[0][1] : 1;
+  $('monthCats').innerHTML = catRows.length ? `<h3 class="cat-h">לאן הלך הכסף החודש</h3><ul class="list">${catRows.map(([k,v]) => `
+    <li><span class="cat-name">${esc(k)}</span><span class="cat-bar"><i style="width:${(v/catMax*100).toFixed(1)}%"></i></span><span class="amt">${money(v)}</span></li>`).join('')}</ul>` : '';
 
   // verdict for last completed month
   const done = months.filter(m => m.done);
@@ -427,6 +453,10 @@ function editHTML(e){
       <input class="full" id="eAmount" type="number" inputmode="decimal" step="0.01" min="0.01" value="${e.amount}" aria-label="סכום" required>
       <input id="eNote" type="text" value="${esc(e.note)}" placeholder="על מה?" aria-label="על מה">
       <input id="eDate" type="date" max="${today()}" value="${e.date}" aria-label="תאריך" required>
+      <select class="full" id="eCat" aria-label="קטגוריה">
+        <option value="">${NO_CAT}</option>
+        ${[...CATS, ...(e.cat && !CATS.includes(e.cat) ? [e.cat] : [])].map(c => `<option${c === e.cat ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select>
       <div class="actions full">
         <button class="primary" type="submit">שמירה</button>
         <button type="button" data-act="cancel">ביטול</button>
@@ -494,7 +524,7 @@ async function connect(code){
     catch(e){ db = fs.getFirestore(fapp); }
     const hRef = fs.doc(db, 'households', code);
     const col = fs.collection(hRef, 'expenses');
-    const toDoc = e => ({ date: e.date, amount: e.amount, note: e.note || '', ts: e.ts || Date.now() });
+    const toDoc = e => ({ date: e.date, amount: e.amount, note: e.note || '', cat: e.cat || '', ts: e.ts || Date.now() });
     const api = {
       add: e => fs.setDoc(fs.doc(col, e.id), toDoc(e)),
       del: id => fs.deleteDoc(fs.doc(col, id)),
@@ -598,6 +628,14 @@ function deleteExpense(id){
 }
 
 /* ---------- events ---------- */
+$('cats').innerHTML = CATS.map(c => `<label><input type="radio" name="cat" value="${esc(c)}"><span>${esc(c)}</span></label>`).join('');
+// the category is optional: tapping the chosen chip again clears it
+$('cats').addEventListener('click', ev => {
+  const i = ev.target.closest('input'); if (!i) return;
+  if (i.dataset.was === '1') i.checked = false;
+  document.querySelectorAll('#cats input').forEach(x => x.dataset.was = x.checked ? '1' : '');
+});
+
 $('date').value = today();
 $('date').max = today();
 
@@ -605,10 +643,12 @@ $('addForm').addEventListener('submit', ev => {
   ev.preventDefault();
   const amount = parseFloat($('amount').value);
   if (!(amount > 0)) return;
-  addExpense({ id: newId(), ts: Date.now(), date: $('date').value, amount, note: $('note').value.trim() });
+  const cat = document.querySelector('#cats input:checked')?.value || '';
+  addExpense({ id: newId(), ts: Date.now(), date: $('date').value, amount, note: $('note').value.trim(), cat });
   const wk = computeWeeks().find(w => w.current);
   if (wk.spent <= wk.limit) confetti();
   $('amount').value = ''; $('note').value = ''; $('date').value = today();
+  document.querySelectorAll('#cats input').forEach(i => { i.checked = false; i.dataset.was = ''; });
   $('amount').focus();
 });
 
@@ -628,10 +668,10 @@ $('weekItems').addEventListener('click', ev => {
 $('weekItems').addEventListener('submit', ev => {
   ev.preventDefault();
   const id = ev.target.dataset.id, old = state.expenses.find(e => e.id === id);
-  const amount = parseFloat($('eAmount').value), date = $('eDate').value, note = $('eNote').value.trim();
+  const amount = parseFloat($('eAmount').value), date = $('eDate').value, note = $('eNote').value.trim(), cat = $('eCat').value;
   editing = null; $('weekItems').innerHTML = '';
   if (old && amount > 0 && date){
-    updateExpense({ ...old, amount, date, note });
+    updateExpense({ ...old, amount, date, note, cat });
     viewWeek = weekStart(date);   // follow the expense if its date moved it to another week
   }
   render();
