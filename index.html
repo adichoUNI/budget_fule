@@ -82,6 +82,8 @@ select{font:inherit;color:var(--ink);background:var(--soft);border:1px solid var
 .cats span{display:block;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--soft);font-size:.9rem;cursor:pointer}
 .cats input:checked+span{background:var(--accent);border-color:var(--accent);color:#fff}
 .cats input:focus-visible+span{outline:2px solid var(--accent);outline-offset:1px}
+.cats .add-cat{padding:0;border:0;background:none;border-radius:99px}
+.cats .add-cat span{font-weight:700;border-style:dashed;padding-inline:14px}
 .tag{font-size:.75rem;padding:1px 8px;border-radius:99px;background:var(--soft);color:var(--muted);white-space:nowrap}
 .cat-h{font-size:.95rem;margin:16px 0 4px}
 .cat-name{width:7.5em;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -245,11 +247,14 @@ const MKEY = 'budget-fuel-migrated-';      // + code: this device's pre-sync exp
 const $ = id => document.getElementById(id);
 const DEFAULTS = { weeklyLimit: 1000, monthlyLimit: null, expenses: [] };
 
-const CATS = ['אוכל', 'אוכל בחוץ', 'קניות לבית', 'רכב', 'תחבורה ציבורית', 'בגדים', 'אחר'];
+const CATS = ['סופר', 'אוכל בחוץ', 'קניות לבית', 'רכב', 'תחבורה ציבורית', 'בגדים', 'אחר'];
 const NO_CAT = 'ללא קטגוריה';
+const RENAMED = { 'אוכל': 'סופר' };   // old category names still stored on earlier expenses
+// built-in categories, then the ones added with "+" (shared through the household doc)
+const allCats = () => [...CATS, ...(state.customCats || []).filter(c => !CATS.includes(c))];
 
 // ids were numbers (Date.now()) before sync; Firestore doc ids are strings
-const normalize = e => ({ id: String(e.id), ts: Number(e.ts) || Number(e.id) || 0, date: String(e.date), amount: Number(e.amount) || 0, note: e.note || '', cat: e.cat || '' });
+const normalize = e => ({ id: String(e.id), ts: Number(e.ts) || Number(e.id) || 0, date: String(e.date), amount: Number(e.amount) || 0, note: e.note || '', cat: RENAMED[e.cat] || e.cat || '' });
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 function load(){
@@ -455,7 +460,7 @@ function editHTML(e){
       <input id="eDate" type="date" max="${today()}" value="${e.date}" aria-label="תאריך" required>
       <select class="full" id="eCat" aria-label="קטגוריה">
         <option value="">${NO_CAT}</option>
-        ${[...CATS, ...(e.cat && !CATS.includes(e.cat) ? [e.cat] : [])].map(c => `<option${c === e.cat ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+        ${[...allCats(), ...(e.cat && !allCats().includes(e.cat) ? [e.cat] : [])].map(c => `<option${c === e.cat ? ' selected' : ''}>${esc(c)}</option>`).join('')}
       </select>
       <div class="actions full">
         <button class="primary" type="submit">שמירה</button>
@@ -529,6 +534,7 @@ async function connect(code){
       add: e => fs.setDoc(fs.doc(col, e.id), toDoc(e)),
       del: id => fs.deleteDoc(fs.doc(col, id)),
       settings: () => fs.setDoc(hRef, { weeklyLimit: state.weeklyLimit, monthlyLimit: state.monthlyLimit || null }, { merge: true }),
+      addCats: cats => fs.setDoc(hRef, { cats: fs.arrayUnion(...cats) }, { merge: true }),
       addMany: async list => {
         for (let i = 0; i < list.length; i += 400){
           const b = fs.writeBatch(db);
@@ -544,6 +550,7 @@ async function connect(code){
       if (!h.exists()) await api.settings();
       const have = new Set(ex.docs.map(d => d.id));
       await api.addMany(state.expenses.filter(e => !have.has(e.id)));
+      if (state.customCats?.length) await api.addCats(state.customCats);
       try { localStorage.setItem(MKEY + code, '1'); } catch(e){}
     }
     cloud = api;
@@ -551,6 +558,10 @@ async function connect(code){
       const d = s.data(); if (!d) return;
       state.weeklyLimit = Number(d.weeklyLimit) || state.weeklyLimit;
       state.monthlyLimit = Number(d.monthlyLimit) || null;
+      if (Array.isArray(d.cats) && d.cats.join('|') !== (state.customCats || []).join('|')){
+        state.customCats = d.cats.filter(c => typeof c === 'string');
+        renderCats();
+      }
       save(); render();
     }, syncError);
     fs.onSnapshot(col, s => {
@@ -628,9 +639,25 @@ function deleteExpense(id){
 }
 
 /* ---------- events ---------- */
-$('cats').innerHTML = CATS.map(c => `<label><input type="radio" name="cat" value="${esc(c)}"><span>${esc(c)}</span></label>`).join('');
+function renderCats(select){
+  const cur = select ?? document.querySelector('#cats input:checked')?.value;
+  $('cats').innerHTML = allCats().map(c => `<label><input type="radio" name="cat" value="${esc(c)}"${c === cur ? ' checked data-was="1"' : ''}><span>${esc(c)}</span></label>`).join('')
+    + '<label><button type="button" class="add-cat" aria-label="הוספת קטגוריה"><span>+</span></button></label>';
+}
+function addCategory(){
+  const name = (prompt('שם הקטגוריה החדשה:') || '').trim().slice(0, 24);
+  if (!name) return;
+  if (!allCats().includes(name)){
+    state.customCats = [...(state.customCats || []), name];
+    save();
+    if (cloud) cloud.addCats([name]).catch(syncError);
+  }
+  renderCats(name);   // select it, ready for the expense being entered
+}
+renderCats();
 // the category is optional: tapping the chosen chip again clears it
 $('cats').addEventListener('click', ev => {
+  if (ev.target.closest('.add-cat')) { addCategory(); return; }
   const i = ev.target.closest('input'); if (!i) return;
   if (i.dataset.was === '1') i.checked = false;
   document.querySelectorAll('#cats input').forEach(x => x.dataset.was = x.checked ? '1' : '');
