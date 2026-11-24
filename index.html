@@ -89,6 +89,12 @@ select{font:inherit;color:var(--ink);background:var(--soft);border:1px solid var
 .cat-name{width:7.5em;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cat-bar{flex:1;height:8px;background:var(--soft);border-radius:99px;overflow:hidden}
 .cat-bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.catrow{cursor:pointer}
+.catrow:hover .cat-name{color:var(--accent)}
+.chev{color:var(--muted);font-size:.8rem;width:1em;text-align:center}
+ul.list li.cat-items{display:block;padding:0 0 6px;border-top:0}
+.cat-items ul.list{padding-inline-start:14px;border-inline-start:2px solid var(--line);font-size:.9rem}
+.cat-items ul.list li{padding:5px 0}
 #weekList li[data-week]{cursor:pointer}
 #weekList li[data-week]:hover .grow{color:var(--accent)}
 .pill{font-size:.8rem;padding:2px 8px;border-radius:99px;white-space:nowrap}
@@ -267,6 +273,7 @@ function load(){
 let state = load();
 let viewWeek = null;   // week shown in the expenses card (start date); null = this week
 let editing = null;    // id of the expense being edited
+let openCat = null;    // category opened in the month breakdown
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e){} }
 
 /* ---------- dates (local, as YYYY-MM-DD strings) ---------- */
@@ -286,7 +293,8 @@ const money = n => fmt.format(Math.round(n*100)/100);
 const sum = arr => arr.reduce((a,e) => a + e.amount, 0);
 
 /* ---------- budget logic ---------- */
-// Weekly: overspending carries forward as a deduction from the next week's limit.
+// Weekly: overspending carries forward as a deduction from the next week's limit, within a month.
+// The week containing the 1st starts fresh: last month's overspending already counts in its monthly summary.
 // Unused money does NOT carry forward (it shows up as monthly savings instead).
 function computeWeeks(){
   const cur = weekStart(today());
@@ -303,6 +311,8 @@ function computeWeeks(){
   for (let w = first; w <= last; w = addDays(w, 7)){
     const items = (byWeek[w] || []).sort((a,b) => b.date.localeCompare(a.date) || b.ts - a.ts);
     const spent = sum(items);
+    const end = addDays(w, 6);
+    if (w.endsWith('-01') || w.slice(0,7) !== end.slice(0,7)) deficit = 0;   // a new month begins this week
     const limit = state.weeklyLimit - deficit;
     const over = Math.max(0, spent - limit);
     weeks.push({ start:w, end:addDays(w,6), items, spent, limit, carried:deficit, over, current: w === cur });
@@ -375,7 +385,9 @@ function render(){
   $('carryNote').hidden = !wk.carried;
   $('carryNote').textContent = wk.carried ? `ירדו ${money(wk.carried)} מהתקציב השבוע בגלל חריגה בשבוע שעבר` : '';
 
-  if (left < 0)        setMood($('weekMood'), 'sad',  '😬', `חרגנו ב־${money(-left)}`, 'הסכום הזה ירד מהתקציב של השבוע הבא.');
+  const nextW = addDays(wk.start, 7), nextIsNewMonth = nextW.endsWith('-01') || nextW.slice(0,7) !== addDays(nextW, 6).slice(0,7);
+  if (left < 0)        setMood($('weekMood'), 'sad',  '😬', `חרגנו ב־${money(-left)}`,
+                         nextIsNewMonth ? 'בשבוע הבא מתחיל חודש חדש, אז מתחילים מתקציב מלא.' : 'הסכום הזה ירד מהתקציב של השבוע הבא.');
   else if (frac < .2)  setMood($('weekMood'), 'warn', '⛽', 'הדלק עומד להיגמר!', `נשארו רק ${money(left)} עד סוף השבוע.`);
   else if (frac < .45) setMood($('weekMood'), 'happy','🙂', 'עדיין בתוך התקציב', 'כדאי להאט קצת.');
   else                 setMood($('weekMood'), 'happy', wk.spent === 0 ? '🌞' : '🥳', 'עומדות בתקציב!', 'ממשיכות ככה.');
@@ -423,8 +435,10 @@ function render(){
   for (const e of state.expenses) if (e.date.slice(0,7) === cm.key) byCat[e.cat || NO_CAT] = (byCat[e.cat || NO_CAT] || 0) + e.amount;
   const catRows = Object.entries(byCat).sort((a,b) => b[1] - a[1]);
   const catMax = catRows.length ? catRows[0][1] : 1;
+  if (openCat && !byCat[openCat]) openCat = null;
   $('monthCats').innerHTML = catRows.length ? `<h3 class="cat-h">לאן הלך הכסף החודש</h3><ul class="list">${catRows.map(([k,v]) => `
-    <li><span class="cat-name">${esc(k)}</span><span class="cat-bar"><i style="width:${(v/catMax*100).toFixed(1)}%"></i></span><span class="amt">${money(v)}</span></li>`).join('')}</ul>` : '';
+    <li class="catrow" data-cat="${esc(k)}" aria-expanded="${k === openCat}"><span class="cat-name">${esc(k)}</span><span class="cat-bar"><i style="width:${(v/catMax*100).toFixed(1)}%"></i></span><span class="amt">${money(v)}</span><span class="chev">${k === openCat ? '▾' : '◂'}</span></li>
+    ${k === openCat ? catItemsHTML(cm.key, k) : ''}`).join('')}</ul>` : '';
 
   // verdict for last completed month
   const done = months.filter(m => m.done);
@@ -450,6 +464,17 @@ function render(){
         <span class="amt">${money(w.spent)}</span>
         ${w.current ? '<span class="pill now">השבוע</span>'
           : w.over ? `<span class="pill bad">חריגה ${money(w.over)}</span>` : '<span class="pill ok">✓</span>'}</li>`).join('');
+}
+
+// one category's expenses in a month, opened by tapping its row in "לאן הלך הכסף החודש"
+function catItemsHTML(monthKey, cat){
+  const items = state.expenses
+    .filter(e => e.date.slice(0,7) === monthKey && (e.cat || NO_CAT) === cat)
+    .sort((a,b) => b.date.localeCompare(a.date) || b.ts - a.ts);
+  return `<li class="cat-items"><ul class="list">${items.map(e => `
+    <li><span class="muted">${short(e.date)}</span>
+        <span class="grow">${esc(e.note) || '<span class="muted">—</span>'}</span>
+        <span class="amt">${money(e.amount)}</span></li>`).join('')}</ul></li>`;
 }
 
 function editHTML(e){
@@ -706,6 +731,11 @@ $('weekItems').addEventListener('submit', ev => {
 
 $('prevWeek').onclick = () => { viewWeek = addDays(viewWeek, -7); editing = null; $('weekItems').innerHTML = ''; render(); };
 $('nextWeek').onclick = () => { viewWeek = addDays(viewWeek, 7); editing = null; $('weekItems').innerHTML = ''; render(); };
+$('monthCats').addEventListener('click', ev => {
+  const li = ev.target.closest('li[data-cat]'); if (!li) return;
+  openCat = openCat === li.dataset.cat ? null : li.dataset.cat;
+  render();
+});
 $('weekList').addEventListener('click', ev => {
   const li = ev.target.closest('li[data-week]'); if (!li) return;
   viewWeek = li.dataset.week; editing = null; $('weekItems').innerHTML = ''; render();
